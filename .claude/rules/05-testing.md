@@ -1,3 +1,9 @@
+---
+paths:
+  - "**/*.rs"
+  - "**/tests/**/*"
+---
+
 # Testing Rules (Mandatory)
 
 ## General

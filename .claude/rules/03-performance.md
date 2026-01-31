@@ -1,3 +1,8 @@
+---
+paths:
+  - "**/*.rs"
+---
+
 # Performance & Resource Management
 
 - Avoid unnecessary allocations

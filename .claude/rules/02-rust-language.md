@@ -1,3 +1,9 @@
+---
+paths:
+  - "**/*.rs"
+  - "**/Cargo.toml"
+---
+
 # Language Rules (Rust)
 
 - Follow official Rust style and idioms

@@ -1,3 +1,9 @@
+---
+paths:
+  - "**/benches/**/*"
+  - "**/Cargo.toml"
+---
+
 # Benchmarking Rules (Criterion)
 
 ## General

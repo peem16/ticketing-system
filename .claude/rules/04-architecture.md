@@ -1,3 +1,9 @@
+---
+paths:
+  - "services/**/*"
+  - "docker-compose*.yml"
+---
+
 # Clean Architecture (Strict)
 
 ## Domain Layer

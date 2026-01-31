@@ -1,3 +1,10 @@
+---
+paths:
+  - "**/*.rs"
+  - "**/*.md"
+  - "**/*.proto"
+---
+
 # Documentation Rules
 
 ## General
