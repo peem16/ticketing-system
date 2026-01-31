@@ -1,4 +1,4 @@
-.PHONY: up down build logs clean db-shell auth-logs
+.PHONY: up down build logs clean db-shell auth-logs gateway-logs migrate
 
 # Start all services
 up:
@@ -27,6 +27,10 @@ logs:
 # View auth service logs
 auth-logs:
 	docker-compose logs -f auth-service
+
+# View API gateway logs
+gateway-logs:
+	docker-compose logs -f api-gateway
 
 # Access PostgreSQL shell
 db-shell:

@@ -3,11 +3,16 @@ FROM rust:1.92-bookworm AS builder
 
 WORKDIR /app
 
-# Install diesel CLI for migrations
+# Install protobuf compiler and diesel CLI
+RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
 RUN cargo install diesel_cli --no-default-features --features postgres
 
-# Copy manifests
-COPY Cargo.toml Cargo.toml
+# Copy proto files
+COPY proto ./proto
+
+# Copy manifests and build script
+COPY services/auth-service/Cargo.toml Cargo.toml
+COPY services/auth-service/build.rs build.rs
 
 # Create dummy source to cache dependencies
 RUN mkdir src && \
@@ -18,9 +23,9 @@ RUN mkdir src && \
 RUN cargo build --release && rm -rf src
 
 # Copy actual source code
-COPY src ./src
-COPY migrations ./migrations
-COPY diesel.toml ./diesel.toml
+COPY services/auth-service/src ./src
+COPY services/auth-service/migrations ./migrations
+COPY services/auth-service/diesel.toml ./diesel.toml
 
 # Touch main.rs to invalidate the binary cache
 RUN touch src/main.rs
@@ -49,11 +54,11 @@ COPY --from=builder /app/migrations /app/migrations
 COPY --from=builder /app/diesel.toml /app/diesel.toml
 
 # Copy entrypoint script and fix line endings (Windows CRLF -> Unix LF)
-COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+COPY services/auth-service/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN sed -i 's/\r$//' /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoint.sh
 
-# Expose port
-EXPOSE 8080
+# Expose HTTP and gRPC ports
+EXPOSE 8080 50051
 
 # Set entrypoint
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

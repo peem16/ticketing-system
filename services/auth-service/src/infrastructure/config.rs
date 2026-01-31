@@ -10,6 +10,7 @@ pub struct Config {
     pub jwt_expiration_secs: i64,
     pub server_host: String,
     pub server_port: u16,
+    pub grpc_port: u16,
 }
 
 impl Config {
@@ -36,12 +37,18 @@ impl Config {
             .parse()
             .map_err(|_| ConfigError::InvalidValue("SERVER_PORT"))?;
 
+        let grpc_port = env::var("GRPC_PORT")
+            .unwrap_or_else(|_| "50051".to_string())
+            .parse()
+            .map_err(|_| ConfigError::InvalidValue("GRPC_PORT"))?;
+
         Ok(Self {
             database_url,
             jwt_secret,
             jwt_expiration_secs,
             server_host,
             server_port,
+            grpc_port,
         })
     }
 }
