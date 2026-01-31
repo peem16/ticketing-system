@@ -1,0 +1,56 @@
+version: "3.8"
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: ticketing-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: auth_service
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d auth_service"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ticketing-network
+
+  # Auth Service
+  auth-service:
+    build:
+      context: ./services/auth-service
+      dockerfile: Dockerfile
+    container_name: ticketing-auth-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/auth_service
+      AUTH_JWT_SECRET: your-super-secret-jwt-key-change-in-production
+      AUTH_JWT_EXP_SECS: 3600
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8080
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: auth_service
+      RUST_LOG: auth_service=debug,info
+    ports:
+      - "8080:8080"
+    networks:
+      - ticketing-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
+networks:
+  ticketing-network:
+    driver: bridge
