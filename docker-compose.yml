@@ -51,11 +51,11 @@ services:
     networks:
       - ticketing-network
 
-  # Auth Service
+  # Auth Service (HTTP + gRPC)
   auth-service:
     build:
-      context: ./services/auth-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/auth-service/Dockerfile
     container_name: ticketing-auth-service
     depends_on:
       postgres:
@@ -66,6 +66,7 @@ services:
       AUTH_JWT_EXP_SECS: 3600
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: 8080
+      GRPC_PORT: 50051
       POSTGRES_HOST: postgres
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -73,6 +74,26 @@ services:
       RUST_LOG: auth_service=debug,info
     ports:
       - "8080:8080"
+      - "50051:50051"
+    networks:
+      - ticketing-network
+    restart: unless-stopped
+
+  # API Gateway (HTTP → gRPC)
+  api-gateway:
+    build:
+      context: .
+      dockerfile: services/api-gateway/Dockerfile
+    container_name: ticketing-api-gateway
+    depends_on:
+      - auth-service
+    environment:
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 3000
+      AUTH_SERVICE_GRPC_URL: http://auth-service:50051
+      RUST_LOG: api_gateway=debug,info
+    ports:
+      - "3000:3000"
     networks:
       - ticketing-network
     restart: unless-stopped
