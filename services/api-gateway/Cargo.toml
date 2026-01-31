@@ -2,14 +2,18 @@
 name = "api-gateway"
 version = "0.1.0"
 edition = "2021"
-description = "API Gateway - routes HTTP requests to backend gRPC services"
+description = "API Gateway - GraphQL frontend that routes to backend gRPC services"
 
 [dependencies]
 # Web framework
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
-tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# GraphQL
+async-graphql = "7"
+async-graphql-axum = "7"
 
 # gRPC client
 tonic = "0.12"
