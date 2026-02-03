@@ -103,21 +103,27 @@ impl IntoResponse for AuthError {
 // ============================================================================
 
 /// POST /auth/register - Register a new user
+///
+/// Diesel and Argon2 operations are wrapped in `spawn_blocking` to avoid
+/// blocking the Tokio async runtime.
 pub async fn register(
     State(state): State<Arc<AppState>>,
     Json(body): Json<RegisterRequest>,
 ) -> Result<impl IntoResponse, AuthError> {
-    let repo = DieselUserRepository::new(state.pool.clone());
+    let result = tokio::task::spawn_blocking(move || {
+        let repo = DieselUserRepository::new(state.pool.clone());
+        let use_case = RegisterUserUseCase::new(&repo, state.password_hasher.as_ref());
 
-    let use_case = RegisterUserUseCase::new(&repo, state.password_hasher.as_ref());
+        let command = RegisterUserCommand {
+            email: body.email,
+            password: body.password,
+            display_name: body.display_name,
+        };
 
-    let command = RegisterUserCommand {
-        email: body.email,
-        password: body.password,
-        display_name: body.display_name,
-    };
-
-    let result = use_case.execute(command)?;
+        use_case.execute(command)
+    })
+    .await
+    .map_err(|e| AuthError::Internal(format!("Task join error: {}", e)))??;
 
     let response = RegisterResponse {
         user_id: result.user_id.to_string(),
@@ -129,24 +135,29 @@ pub async fn register(
 }
 
 /// POST /auth/login - Authenticate user and return JWT
+///
+/// Diesel and Argon2 operations are wrapped in `spawn_blocking`.
 pub async fn login(
     State(state): State<Arc<AppState>>,
     Json(body): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, AuthError> {
-    let repo = DieselUserRepository::new(state.pool.clone());
+    let result = tokio::task::spawn_blocking(move || {
+        let repo = DieselUserRepository::new(state.pool.clone());
+        let use_case = LoginUserUseCase::new(
+            &repo,
+            state.password_hasher.as_ref(),
+            state.token_service.as_ref(),
+        );
 
-    let use_case = LoginUserUseCase::new(
-        &repo,
-        state.password_hasher.as_ref(),
-        state.token_service.as_ref(),
-    );
+        let command = LoginUserCommand {
+            email: body.email,
+            password: body.password,
+        };
 
-    let command = LoginUserCommand {
-        email: body.email,
-        password: body.password,
-    };
-
-    let result = use_case.execute(command)?;
+        use_case.execute(command)
+    })
+    .await
+    .map_err(|e| AuthError::Internal(format!("Task join error: {}", e)))??;
 
     let response = LoginResponse {
         token: result.token,
@@ -159,6 +170,8 @@ pub async fn login(
 }
 
 /// GET /auth/me - Get current user info from JWT
+///
+/// Diesel operations are wrapped in `spawn_blocking`.
 pub async fn me(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -171,29 +184,54 @@ pub async fn me(
 
     let token = auth_header
         .strip_prefix("Bearer ")
-        .ok_or(AuthError::InvalidToken)?;
+        .ok_or(AuthError::InvalidToken)?
+        .to_string();
 
-    // Validate token
-    let token_data = state.token_service.validate_token(token)?;
+    let result = tokio::task::spawn_blocking(move || {
+        // Validate token (may hit moka cache)
+        let token_data = state.token_service.validate_token(&token)?;
 
-    // Get user from database
-    let repo = DieselUserRepository::new(state.pool.clone());
-    let user = repo.find_by_id(token_data.user_id)?;
+        // Get user from database
+        let repo = DieselUserRepository::new(state.pool.clone());
+        let user = repo.find_by_id(token_data.user_id)?;
 
-    let response = MeResponse {
-        user_id: user.id().as_uuid().to_string(),
-        email: user.email().as_str().to_string(),
-        display_name: user.display_name().map(String::from),
-        is_active: user.is_active(),
-    };
+        Ok::<MeResponse, AuthError>(MeResponse {
+            user_id: user.id().as_uuid().to_string(),
+            email: user.email().as_str().to_string(),
+            display_name: user.display_name().map(String::from),
+            is_active: user.is_active(),
+        })
+    })
+    .await
+    .map_err(|e| AuthError::Internal(format!("Task join error: {}", e)))??;
 
-    Ok(Json(response))
+    Ok(Json(result))
 }
 
 /// GET /health - Health check endpoint
-pub async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({
-        "status": "healthy",
-        "service": "auth-service"
-    }))
+///
+/// Verifies database connectivity by attempting to acquire a pool connection.
+pub async fn health(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let db_ok = tokio::task::spawn_blocking(move || state.pool.get().is_ok())
+        .await
+        .unwrap_or(false);
+
+    let status = if db_ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    (
+        status,
+        Json(serde_json::json!({
+            "status": if db_ok { "healthy" } else { "unhealthy" },
+            "service": "auth-service",
+            "checks": {
+                "database": if db_ok { "connected" } else { "disconnected" }
+            }
+        })),
+    )
 }

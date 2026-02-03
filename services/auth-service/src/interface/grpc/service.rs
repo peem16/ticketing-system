@@ -57,17 +57,23 @@ impl AuthService for AuthServiceGrpc {
         request: Request<RegisterRequest>,
     ) -> Result<Response<RegisterResponse>, Status> {
         let req = request.into_inner();
+        let state = Arc::clone(&self.state);
 
-        let repo = DieselUserRepository::new(self.state.pool.clone());
-        let use_case = RegisterUserUseCase::new(&repo, self.state.password_hasher.as_ref());
+        let result = tokio::task::spawn_blocking(move || {
+            let repo = DieselUserRepository::new(state.pool.clone());
+            let use_case = RegisterUserUseCase::new(&repo, state.password_hasher.as_ref());
 
-        let command = RegisterUserCommand {
-            email: req.email,
-            password: req.password,
-            display_name: req.display_name,
-        };
+            let command = RegisterUserCommand {
+                email: req.email,
+                password: req.password,
+                display_name: req.display_name,
+            };
 
-        let result = use_case.execute(command).map_err(map_auth_error)?;
+            use_case.execute(command)
+        })
+        .await
+        .map_err(|e| Status::internal(format!("Task join error: {}", e)))?
+        .map_err(map_auth_error)?;
 
         Ok(Response::new(RegisterResponse {
             user_id: result.user_id.to_string(),
@@ -81,20 +87,26 @@ impl AuthService for AuthServiceGrpc {
         request: Request<LoginRequest>,
     ) -> Result<Response<LoginResponse>, Status> {
         let req = request.into_inner();
+        let state = Arc::clone(&self.state);
 
-        let repo = DieselUserRepository::new(self.state.pool.clone());
-        let use_case = LoginUserUseCase::new(
-            &repo,
-            self.state.password_hasher.as_ref(),
-            self.state.token_service.as_ref(),
-        );
+        let result = tokio::task::spawn_blocking(move || {
+            let repo = DieselUserRepository::new(state.pool.clone());
+            let use_case = LoginUserUseCase::new(
+                &repo,
+                state.password_hasher.as_ref(),
+                state.token_service.as_ref(),
+            );
 
-        let command = LoginUserCommand {
-            email: req.email,
-            password: req.password,
-        };
+            let command = LoginUserCommand {
+                email: req.email,
+                password: req.password,
+            };
 
-        let result = use_case.execute(command).map_err(map_auth_error)?;
+            use_case.execute(command)
+        })
+        .await
+        .map_err(|e| Status::internal(format!("Task join error: {}", e)))?
+        .map_err(map_auth_error)?;
 
         Ok(Response::new(LoginResponse {
             token: result.token,
@@ -109,24 +121,30 @@ impl AuthService for AuthServiceGrpc {
         request: Request<GetMeRequest>,
     ) -> Result<Response<GetMeResponse>, Status> {
         let req = request.into_inner();
+        let state = Arc::clone(&self.state);
 
-        // Validate token
-        let token_data = self
-            .state
-            .token_service
-            .validate_token(&req.token)
-            .map_err(map_auth_error)?;
+        let result = tokio::task::spawn_blocking(move || {
+            // Validate token (may hit moka cache)
+            let token_data = state
+                .token_service
+                .validate_token(&req.token)
+                .map_err(map_auth_error)?;
 
-        // Fetch user from database
-        let repo = DieselUserRepository::new(self.state.pool.clone());
-        let user = repo.find_by_id(token_data.user_id).map_err(map_auth_error)?;
+            // Fetch user from database
+            let repo = DieselUserRepository::new(state.pool.clone());
+            let user = repo.find_by_id(token_data.user_id).map_err(map_auth_error)?;
 
-        Ok(Response::new(GetMeResponse {
-            user_id: user.id().as_uuid().to_string(),
-            email: user.email().as_str().to_string(),
-            display_name: user.display_name().map(String::from),
-            is_active: user.is_active(),
-        }))
+            Ok::<GetMeResponse, Status>(GetMeResponse {
+                user_id: user.id().as_uuid().to_string(),
+                email: user.email().as_str().to_string(),
+                display_name: user.display_name().map(String::from),
+                is_active: user.is_active(),
+            })
+        })
+        .await
+        .map_err(|e| Status::internal(format!("Task join error: {}", e)))??;
+
+        Ok(Response::new(result))
     }
 
     async fn validate_token(
@@ -134,18 +152,25 @@ impl AuthService for AuthServiceGrpc {
         request: Request<ValidateTokenRequest>,
     ) -> Result<Response<ValidateTokenResponse>, Status> {
         let req = request.into_inner();
+        let state = Arc::clone(&self.state);
 
-        match self.state.token_service.validate_token(&req.token) {
-            Ok(token_data) => Ok(Response::new(ValidateTokenResponse {
-                valid: true,
-                user_id: token_data.user_id.to_string(),
-                email: token_data.email,
-            })),
-            Err(_) => Ok(Response::new(ValidateTokenResponse {
-                valid: false,
-                user_id: String::new(),
-                email: String::new(),
-            })),
-        }
+        let result = tokio::task::spawn_blocking(move || {
+            match state.token_service.validate_token(&req.token) {
+                Ok(token_data) => ValidateTokenResponse {
+                    valid: true,
+                    user_id: token_data.user_id.to_string(),
+                    email: token_data.email,
+                },
+                Err(_) => ValidateTokenResponse {
+                    valid: false,
+                    user_id: String::new(),
+                    email: String::new(),
+                },
+            }
+        })
+        .await
+        .map_err(|e| Status::internal(format!("Task join error: {}", e)))?;
+
+        Ok(Response::new(result))
     }
 }

@@ -1,10 +1,13 @@
 //! GraphQL schema definition
 //!
 //! Defines Query and Mutation types. Resolvers translate GraphQL operations
-//! into gRPC calls to the auth-service.
+//! into gRPC calls to the auth-service via a shared `tonic::Channel`.
+//! A circuit breaker protects against cascading failures when the
+//! auth-service is unavailable.
 
-use async_graphql::{Context, ErrorExtensions, Object, SimpleObject, InputObject};
+use async_graphql::{Context, ErrorExtensions, InputObject, Object, SimpleObject};
 
+use crate::circuit_breaker::CircuitBreaker;
 use crate::grpc_client::{AuthServiceClient, GetMeRequest, LoginRequest, RegisterRequest};
 
 // ============================================================================
@@ -57,23 +60,44 @@ pub struct LoginInput {
 }
 
 // ============================================================================
-// Helper
+// Helpers
 // ============================================================================
 
-/// Connect to the auth-service gRPC endpoint stored in context
-async fn auth_client(ctx: &Context<'_>) -> async_graphql::Result<AuthServiceClient<tonic::transport::Channel>> {
-    let url = ctx.data::<String>().map_err(|_| {
-        async_graphql::Error::new("Internal configuration error")
-            .extend_with(|_, e| e.set("code", "INTERNAL"))
-    })?;
-
-    AuthServiceClient::connect(url.clone()).await.map_err(|e| {
-        async_graphql::Error::new(format!("Auth service unavailable: {}", e))
-            .extend_with(|_, e| e.set("code", "SERVICE_UNAVAILABLE"))
-    })
+/// Get a cloned gRPC channel from the GraphQL context.
+///
+/// The channel is created once at startup and supports multiplexing,
+/// so cloning is cheap (just an `Arc` bump).
+fn auth_channel(ctx: &Context<'_>) -> async_graphql::Result<tonic::transport::Channel> {
+    ctx.data::<tonic::transport::Channel>()
+        .map(|ch| ch.clone())
+        .map_err(|_| {
+            async_graphql::Error::new("Internal configuration error: missing gRPC channel")
+                .extend_with(|_, e| e.set("code", "INTERNAL"))
+        })
 }
 
-/// Map a tonic gRPC status to an async-graphql error with appropriate code
+/// Get the circuit breaker from the GraphQL context.
+fn circuit_breaker(ctx: &Context<'_>) -> async_graphql::Result<CircuitBreaker> {
+    ctx.data::<CircuitBreaker>()
+        .map(|cb| cb.clone())
+        .map_err(|_| {
+            async_graphql::Error::new("Internal configuration error: missing circuit breaker")
+                .extend_with(|_, e| e.set("code", "INTERNAL"))
+        })
+}
+
+/// Check the circuit breaker before making a call.
+fn check_circuit(cb: &CircuitBreaker) -> async_graphql::Result<()> {
+    if !cb.is_available() {
+        return Err(
+            async_graphql::Error::new("Auth service is temporarily unavailable")
+                .extend_with(|_, e| e.set("code", "SERVICE_UNAVAILABLE")),
+        );
+    }
+    Ok(())
+}
+
+/// Map a tonic gRPC status to an async-graphql error with appropriate code.
 fn grpc_err(status: tonic::Status) -> async_graphql::Error {
     let code = match status.code() {
         tonic::Code::InvalidArgument => "BAD_USER_INPUT",
@@ -111,19 +135,37 @@ impl QueryRoot {
             );
         }
 
-        let mut client = auth_client(ctx).await?;
-        let resp = client
-            .get_me(tonic::Request::new(GetMeRequest { token }))
-            .await
-            .map_err(grpc_err)?
-            .into_inner();
+        let channel = auth_channel(ctx)?;
+        let cb = circuit_breaker(ctx)?;
+        check_circuit(&cb)?;
 
-        Ok(User {
-            user_id: resp.user_id,
-            email: resp.email,
-            display_name: resp.display_name,
-            is_active: resp.is_active,
-        })
+        let mut client = AuthServiceClient::new(channel);
+        let result = client
+            .get_me(tonic::Request::new(GetMeRequest { token }))
+            .await;
+
+        match result {
+            Ok(resp) => {
+                cb.record_success();
+                let resp = resp.into_inner();
+                Ok(User {
+                    user_id: resp.user_id,
+                    email: resp.email,
+                    display_name: resp.display_name,
+                    is_active: resp.is_active,
+                })
+            }
+            Err(status) => {
+                // Only record infrastructure failures, not business errors
+                if matches!(
+                    status.code(),
+                    tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Internal
+                ) {
+                    cb.record_failure();
+                }
+                Err(grpc_err(status))
+            }
+        }
     }
 
     /// Gateway health check
@@ -147,23 +189,39 @@ impl MutationRoot {
         ctx: &Context<'_>,
         input: RegisterInput,
     ) -> async_graphql::Result<RegisterPayload> {
-        let mut client = auth_client(ctx).await?;
+        let channel = auth_channel(ctx)?;
+        let cb = circuit_breaker(ctx)?;
+        check_circuit(&cb)?;
 
-        let resp = client
+        let mut client = AuthServiceClient::new(channel);
+        let result = client
             .register(tonic::Request::new(RegisterRequest {
                 email: input.email,
                 password: input.password,
                 display_name: input.display_name,
             }))
-            .await
-            .map_err(grpc_err)?
-            .into_inner();
+            .await;
 
-        Ok(RegisterPayload {
-            user_id: resp.user_id,
-            email: resp.email,
-            display_name: resp.display_name,
-        })
+        match result {
+            Ok(resp) => {
+                cb.record_success();
+                let resp = resp.into_inner();
+                Ok(RegisterPayload {
+                    user_id: resp.user_id,
+                    email: resp.email,
+                    display_name: resp.display_name,
+                })
+            }
+            Err(status) => {
+                if matches!(
+                    status.code(),
+                    tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Internal
+                ) {
+                    cb.record_failure();
+                }
+                Err(grpc_err(status))
+            }
+        }
     }
 
     /// Login with email and password, returns a JWT token
@@ -172,23 +230,39 @@ impl MutationRoot {
         ctx: &Context<'_>,
         input: LoginInput,
     ) -> async_graphql::Result<LoginPayload> {
-        let mut client = auth_client(ctx).await?;
+        let channel = auth_channel(ctx)?;
+        let cb = circuit_breaker(ctx)?;
+        check_circuit(&cb)?;
 
-        let resp = client
+        let mut client = AuthServiceClient::new(channel);
+        let result = client
             .login(tonic::Request::new(LoginRequest {
                 email: input.email,
                 password: input.password,
             }))
-            .await
-            .map_err(grpc_err)?
-            .into_inner();
+            .await;
 
-        Ok(LoginPayload {
-            token: resp.token,
-            user_id: resp.user_id,
-            email: resp.email,
-            display_name: resp.display_name,
-        })
+        match result {
+            Ok(resp) => {
+                cb.record_success();
+                let resp = resp.into_inner();
+                Ok(LoginPayload {
+                    token: resp.token,
+                    user_id: resp.user_id,
+                    email: resp.email,
+                    display_name: resp.display_name,
+                })
+            }
+            Err(status) => {
+                if matches!(
+                    status.code(),
+                    tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Internal
+                ) {
+                    cb.record_failure();
+                }
+                Err(grpc_err(status))
+            }
+        }
     }
 }
 
