@@ -11,6 +11,16 @@ pub struct Config {
     pub server_host: String,
     pub server_port: u16,
     pub grpc_port: u16,
+    /// Maximum number of connections in the database pool
+    pub db_pool_max_size: u32,
+    /// Token validation cache TTL in seconds (0 = disabled)
+    pub token_cache_ttl_secs: u64,
+    /// Token validation cache max capacity
+    pub token_cache_max_capacity: u64,
+    /// Log format: "json" for structured JSON, anything else for human-readable
+    pub log_format: String,
+    /// Global rate limit: max requests per second (0 = disabled)
+    pub rate_limit_per_second: u32,
 }
 
 impl Config {
@@ -42,6 +52,28 @@ impl Config {
             .parse()
             .map_err(|_| ConfigError::InvalidValue("GRPC_PORT"))?;
 
+        let db_pool_max_size = env::var("DB_POOL_MAX_SIZE")
+            .unwrap_or_else(|_| "20".to_string())
+            .parse()
+            .map_err(|_| ConfigError::InvalidValue("DB_POOL_MAX_SIZE"))?;
+
+        let token_cache_ttl_secs = env::var("TOKEN_CACHE_TTL_SECS")
+            .unwrap_or_else(|_| "30".to_string())
+            .parse()
+            .map_err(|_| ConfigError::InvalidValue("TOKEN_CACHE_TTL_SECS"))?;
+
+        let token_cache_max_capacity = env::var("TOKEN_CACHE_MAX_CAPACITY")
+            .unwrap_or_else(|_| "10000".to_string())
+            .parse()
+            .map_err(|_| ConfigError::InvalidValue("TOKEN_CACHE_MAX_CAPACITY"))?;
+
+        let log_format = env::var("LOG_FORMAT").unwrap_or_else(|_| "text".to_string());
+
+        let rate_limit_per_second = env::var("RATE_LIMIT_PER_SECOND")
+            .unwrap_or_else(|_| "100".to_string())
+            .parse()
+            .map_err(|_| ConfigError::InvalidValue("RATE_LIMIT_PER_SECOND"))?;
+
         Ok(Self {
             database_url,
             jwt_secret,
@@ -49,6 +81,11 @@ impl Config {
             server_host,
             server_port,
             grpc_port,
+            db_pool_max_size,
+            token_cache_ttl_secs,
+            token_cache_max_capacity,
+            log_format,
+            rate_limit_per_second,
         })
     }
 }

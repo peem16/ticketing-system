@@ -5,4 +5,6 @@ pub mod pb {
 }
 
 pub use pb::auth_service_client::AuthServiceClient;
-pub use pb::{GetMeRequest, LoginRequest, RegisterRequest};
+pub use pb::{
+    GetMeRequest, LoginRequest, RegisterRequest, ValidateTokenRequest,
+};

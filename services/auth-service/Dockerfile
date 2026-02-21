@@ -1,44 +1,59 @@
-# Build stage
-FROM rust:1.92-bookworm AS builder
+# ============================================================================
+# Stage 1: cargo-chef — compute a dependency-only build plan
+# ============================================================================
+FROM rust:1.92-bookworm AS chef
 
+RUN cargo install cargo-chef --locked
 WORKDIR /app
 
-# Install protobuf compiler and diesel CLI
+# ============================================================================
+# Stage 2: Prepare recipe (dependency lockfile for caching)
+# ============================================================================
+FROM chef AS planner
+
+# Copy everything needed for dependency resolution
+COPY proto ./proto
+COPY services/auth-service/Cargo.toml Cargo.toml
+COPY services/auth-service/build.rs build.rs
+COPY services/auth-service/src ./src
+COPY services/auth-service/migrations ./migrations
+
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ============================================================================
+# Stage 3: Build dependencies (cached unless Cargo.toml/lock changes)
+# ============================================================================
+FROM chef AS builder
+
+# Install protobuf compiler
 RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
-RUN cargo install diesel_cli --no-default-features --features postgres
 
 # Copy proto files
 COPY proto ./proto
 
-# Copy manifests and build script
-COPY services/auth-service/Cargo.toml Cargo.toml
+# Copy build script (needed for tonic-build during dep compilation)
 COPY services/auth-service/build.rs build.rs
 
-# Create dummy source to cache dependencies
-RUN mkdir src && \
-    echo "fn main() {}" > src/main.rs && \
-    echo "pub fn dummy() {}" > src/lib.rs
+# Cook dependencies from the recipe (this layer is heavily cached)
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
 
-# Build dependencies (this layer will be cached)
-RUN cargo build --release && rm -rf src
-
-# Copy actual source code
+# Copy actual source code + migrations
 COPY services/auth-service/src ./src
 COPY services/auth-service/migrations ./migrations
 COPY services/auth-service/diesel.toml ./diesel.toml
 
-# Touch main.rs to invalidate the binary cache
-RUN touch src/main.rs
-
 # Build the actual application
 RUN cargo build --release
 
-# Runtime stage
+# ============================================================================
+# Stage 4: Minimal runtime image
+# ============================================================================
 FROM debian:bookworm-slim
 
 WORKDIR /app
 
-# Install runtime dependencies
+# Install only the minimal runtime dependencies
 RUN apt-get update && apt-get install -y \
     libpq5 \
     ca-certificates \
@@ -48,12 +63,7 @@ RUN apt-get update && apt-get install -y \
 # Copy the binary from builder
 COPY --from=builder /app/target/release/auth-service /app/auth-service
 
-# Copy diesel CLI and migrations for runtime migration support
-COPY --from=builder /usr/local/cargo/bin/diesel /usr/local/bin/diesel
-COPY --from=builder /app/migrations /app/migrations
-COPY --from=builder /app/diesel.toml /app/diesel.toml
-
-# Copy entrypoint script and fix line endings (Windows CRLF -> Unix LF)
+# Copy entrypoint script and fix line endings
 COPY services/auth-service/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN sed -i 's/\r$//' /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoint.sh
 

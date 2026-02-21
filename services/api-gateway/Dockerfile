@@ -1,7 +1,28 @@
-# Build stage
-FROM rust:1.92-bookworm AS builder
+# ============================================================================
+# Stage 1: cargo-chef — compute a dependency-only build plan
+# ============================================================================
+FROM rust:1.92-bookworm AS chef
 
+RUN cargo install cargo-chef --locked
 WORKDIR /app
+
+# ============================================================================
+# Stage 2: Prepare recipe (dependency lockfile for caching)
+# ============================================================================
+FROM chef AS planner
+
+# Copy everything needed for dependency resolution
+COPY proto ./proto
+COPY services/api-gateway/Cargo.toml Cargo.toml
+COPY services/api-gateway/build.rs build.rs
+COPY services/api-gateway/src ./src
+
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ============================================================================
+# Stage 3: Build dependencies (cached unless Cargo.toml/lock changes)
+# ============================================================================
+FROM chef AS builder
 
 # Install protobuf compiler
 RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
@@ -9,32 +30,27 @@ RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/ap
 # Copy proto files
 COPY proto ./proto
 
-# Copy manifests and build script
-COPY services/api-gateway/Cargo.toml Cargo.toml
+# Copy build script (needed for tonic-build during dep compilation)
 COPY services/api-gateway/build.rs build.rs
 
-# Create dummy source to cache dependencies
-RUN mkdir src && \
-    echo "fn main() {}" > src/main.rs
-
-# Build dependencies (this layer will be cached)
-RUN cargo build --release && rm -rf src
+# Cook dependencies from the recipe (this layer is heavily cached)
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
 
 # Copy actual source code
 COPY services/api-gateway/src ./src
 
-# Touch main.rs to invalidate the binary cache
-RUN touch src/main.rs
-
 # Build the actual application
 RUN cargo build --release
 
-# Runtime stage
+# ============================================================================
+# Stage 4: Minimal runtime image
+# ============================================================================
 FROM debian:bookworm-slim
 
 WORKDIR /app
 
-# Install runtime dependencies
+# Install only the minimal runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*

@@ -11,12 +11,8 @@ done
 
 echo "PostgreSQL is ready!"
 
-# Run migrations
-echo "Running database migrations..."
-diesel migration run
+# Migrations are now embedded in the binary and run on startup automatically.
+# No need for diesel CLI or separate migration step.
 
-echo "Migrations completed!"
-
-# Start the application
 echo "Starting Auth Service..."
 exec /app/auth-service

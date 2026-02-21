@@ -13,12 +13,13 @@ pub type PooledDbConnection = PooledConnection<ConnectionManager<PgConnection>>;
 ///
 /// # Arguments
 /// * `database_url` - PostgreSQL connection string
+/// * `max_size` - Maximum number of connections in the pool
 ///
 /// # Errors
 /// Returns error if pool creation fails
-pub fn create_connection_pool(database_url: &str) -> Result<DbPool, r2d2::Error> {
+pub fn create_connection_pool(database_url: &str, max_size: u32) -> Result<DbPool, r2d2::Error> {
     let manager = ConnectionManager::<PgConnection>::new(database_url);
     Pool::builder()
-        .max_size(10)
+        .max_size(max_size)
         .build(manager)
 }
